@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "chisha.plugin-backup",
+  "name": "Plugin Backup",
+  "version": "0.1.0",
+  "author": "Chishakaychisha",
+  "license": "MIT",
+  "description": "Export and restore user-installed Omarchy plugins from a portable archive.",
+  "kinds": ["panel"],
+  "entryPoints": {
+    "panel": "Panel.qml"
+  }
+}

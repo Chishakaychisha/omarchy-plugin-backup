@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' "Usage: restore-plugins BACKUP.tar.gz [--replace-shell-config]"
+}
+
+archive=${1:-}
+[[ -n "$archive" ]] || { usage >&2; exit 2; }
+shift
+replace_shell_config=false
+while (($#)); do
+  case "$1" in
+    --replace-shell-config) replace_shell_config=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+[[ -f "$archive" ]] || { echo "Archive not found: $archive" >&2; exit 1; }
+command -v omarchy >/dev/null || { echo "omarchy is required" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
+
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+tar -xzf "$archive" -C "$work_dir"
+lock_file=$(find "$work_dir" -mindepth 2 -maxdepth 2 -name plugins-lock.json -print -quit)
+[[ -n "$lock_file" ]] || { echo "Invalid backup: plugins-lock.json is missing" >&2; exit 1; }
+bundle_dir=$(dirname "$lock_file")
+
+export PLUGIN_BACKUP_LOCK="$lock_file"
+export PLUGIN_BACKUP_DIR="$bundle_dir"
+python3 <<'PY'
+import json, os, pathlib, subprocess, sys
+lock = json.loads(pathlib.Path(os.environ["PLUGIN_BACKUP_LOCK"]).read_text())
+bundle = pathlib.Path(os.environ["PLUGIN_BACKUP_DIR"])
+failed = []
+for plugin in lock.get("plugins", []):
+    source, commit, plugin_id = plugin.get("source"), plugin.get("commit"), plugin.get("id")
+    if not source or not commit or not plugin_id:
+        print(f"SKIP {plugin.get('id', 'unknown')}: manual restore required", file=sys.stderr)
+        continue
+    result = subprocess.run(["omarchy", "plugin", "add", source, "--yes"], text=True)
+    plugin_dir = pathlib.Path.home() / ".config/omarchy/plugins" / plugin_id
+    if result.returncode and not plugin_dir.is_dir():
+        failed.append(plugin_id); continue
+    checkout = subprocess.run(["git", "-C", str(plugin_dir), "checkout", "--detach", commit], text=True)
+    if checkout.returncode:
+        failed.append(plugin_id); continue
+    patch = plugin.get("patch")
+    if patch:
+        patch_result = subprocess.run(["git", "-C", str(plugin_dir), "apply", str(bundle / patch)], text=True)
+        if patch_result.returncode: print(f"WARN {plugin_id}: saved patch could not be applied", file=sys.stderr)
+    print(f"RESTORED {plugin_id}")
+if failed:
+    print("Failed: " + ", ".join(failed), file=sys.stderr)
+    sys.exit(1)
+PY
+
+user_home=${HOME:?"HOME is not set"}
+if $replace_shell_config; then
+  [[ -f "$bundle_dir/shell.json" ]] || { echo "Backup has no shell.json" >&2; exit 1; }
+  target="$user_home/.config/omarchy/shell.json"
+  mkdir -p "$(dirname "$target")"
+  [[ ! -f "$target" ]] || cp "$target" "$target.before-plugin-backup-restore"
+  cp "$bundle_dir/shell.json" "$target"
+  omarchy-shell shell reloadConfig
+fi
+omarchy-shell shell rescanPlugins
+echo "Restore complete. Use --replace-shell-config to restore saved layout and enabled state."

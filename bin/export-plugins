@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' "Usage: export-plugins [--output DIRECTORY] [--include-local-changes]"
+}
+
+output_dir="$PWD"
+include_local_changes=false
+while (($#)); do
+  case "$1" in
+    --output) output_dir=${2:?"--output needs a directory"}; shift 2 ;;
+    --include-local-changes) include_local_changes=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
+command -v omarchy >/dev/null || { echo "omarchy is required" >&2; exit 1; }
+
+user_home=${HOME:?"HOME is not set"}
+plugins_dir="$user_home/.config/omarchy/plugins"
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+bundle_name="omarchy-plugin-backup-$timestamp"
+staging_dir=$(mktemp -d)
+bundle_dir="$staging_dir/$bundle_name"
+mkdir -p "$bundle_dir/patches" "$output_dir"
+trap 'rm -rf "$staging_dir"' EXIT
+
+if [[ -f "$user_home/.config/omarchy/shell.json" ]]; then
+  cp "$user_home/.config/omarchy/shell.json" "$bundle_dir/shell.json"
+fi
+
+export PLUGIN_BACKUP_DIR="$plugins_dir"
+export PLUGIN_BACKUP_BUNDLE="$bundle_dir"
+export PLUGIN_BACKUP_INCLUDE_LOCAL_CHANGES="$include_local_changes"
+python3 <<'PY'
+import json, os, pathlib, subprocess, sys
+
+plugins_dir = pathlib.Path(os.environ["PLUGIN_BACKUP_DIR"])
+bundle_dir = pathlib.Path(os.environ["PLUGIN_BACKUP_BUNDLE"])
+include_changes = os.environ["PLUGIN_BACKUP_INCLUDE_LOCAL_CHANGES"] == "true"
+
+def run(path, *args):
+    return subprocess.run(["git", "-C", str(path), *args], text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+plugins = []
+warnings = []
+if plugins_dir.is_dir():
+    for path in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
+        manifest = path / "manifest.json"
+        if not manifest.is_file():
+            warnings.append(f"{path.name}: skipped (no manifest.json)")
+            continue
+        try:
+            plugin_id = json.loads(manifest.read_text())["id"]
+        except (OSError, ValueError, KeyError):
+            warnings.append(f"{path.name}: skipped (invalid manifest.json)")
+            continue
+        remote = run(path, "remote", "get-url", "origin")
+        commit = run(path, "rev-parse", "HEAD")
+        item = {"id": plugin_id, "directory": path.name}
+        if remote.returncode == 0 and commit.returncode == 0:
+            item.update({"source": remote.stdout.strip(), "commit": commit.stdout.strip()})
+        else:
+            item["restoreStatus"] = "manual"
+            warnings.append(f"{plugin_id}: no Git origin/commit; copy this plugin manually")
+        status = run(path, "status", "--porcelain")
+        if status.stdout.strip():
+            item["hasLocalChanges"] = True
+            if include_changes:
+                patch = run(path, "diff", "--binary", "HEAD")
+                (bundle_dir / "patches" / f"{plugin_id}.patch").write_text(patch.stdout)
+                item["patch"] = f"patches/{plugin_id}.patch"
+            else:
+                warnings.append(f"{plugin_id}: has local changes (re-run with --include-local-changes to save tracked changes)")
+        plugins.append(item)
+
+shell = bundle_dir / "shell.json"
+lock = {
+    "format": 1,
+    "createdAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+    "shellConfig": "shell.json" if shell.exists() else None,
+    "plugins": plugins,
+    "warnings": warnings,
+}
+(bundle_dir / "plugins-lock.json").write_text(json.dumps(lock, indent=2) + "\n")
+(bundle_dir / "WARNINGS.txt").write_text("\n".join(warnings) + ("\n" if warnings else ""))
+PY
+
+archive="$output_dir/$bundle_name.tar.gz"
+tar -C "$staging_dir" -czf "$archive" "$bundle_name"
+printf 'Created %s\n' "$archive"
