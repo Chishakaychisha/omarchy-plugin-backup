@@ -43,7 +43,7 @@ Item {
       Column {
         anchors.fill: parent; anchors.margins: 24; spacing: 14
         Text { text: "Omarchy plugin backup"; color: "white"; font.pixelSize: 22 }
-        Text { width: parent.width; wrapMode: Text.Wrap; color: "#d0d0d5"; text: "Export saves Git sources, exact commits, and your shell layout. It never exports credentials. Restore from a terminal using bin/restore-plugins." }
+        Text { width: parent.width; wrapMode: Text.Wrap; color: "#d0d0d5"; text: "Export saves Git sources, exact commits, and your shell layout. Use the terminal command with --include-themes to include custom themes and wallpapers. It never exports credentials." }
         Button {
           text: exportProcess.running ? "Exporting…" : "Export to current folder"
           enabled: !exportProcess.running

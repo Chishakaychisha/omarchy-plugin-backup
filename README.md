@@ -7,6 +7,7 @@ Create a portable backup of your user-installed Omarchy shell plugins, then rest
 - each user plugin's Git origin URL and exact commit;
 - a copy of `~/.config/omarchy/shell.json` (bar layout, enabled plugins, and settings);
 - optionally, Git patches for tracked local edits.
+- optionally, every custom theme and its background images from `~/.config/omarchy/themes/`.
 
 It deliberately does **not** copy credentials, package-manager state, or arbitrary files from your home directory. A plugin without a Git origin is recorded as requiring a manual copy.
 
@@ -21,6 +22,7 @@ omarchy plugin add https://github.com/Chishakaychisha/omarchy-plugin-backup.git 
 ```bash
 ./bin/export-plugins --output ~/Documents
 ./bin/export-plugins --output ~/Documents --include-local-changes
+./bin/export-plugins --output ~/Documents --include-themes
 ```
 
 This creates `omarchy-plugin-backup-<timestamp>.tar.gz`.
@@ -40,6 +42,12 @@ That restores plugin repositories and pins them to the exported commits. To also
 ```
 
 `--replace-shell-config` saves the current config as `shell.json.before-plugin-backup-restore` first.
+
+To copy saved custom themes and activate the theme that was current at export time, add `--replace-themes`. Existing themes with the same name are left untouched:
+
+```bash
+./bin/restore-plugins ~/Documents/omarchy-plugin-backup-<timestamp>.tar.gz --replace-themes
+```
 
 ## Development
 

@@ -2,16 +2,18 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Usage: restore-plugins BACKUP.tar.gz [--replace-shell-config]"
+  printf '%s\n' "Usage: restore-plugins BACKUP.tar.gz [--replace-shell-config] [--replace-themes]"
 }
 
 archive=${1:-}
 [[ -n "$archive" ]] || { usage >&2; exit 2; }
 shift
 replace_shell_config=false
+replace_themes=false
 while (($#)); do
   case "$1" in
     --replace-shell-config) replace_shell_config=true; shift ;;
+    --replace-themes) replace_themes=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -58,6 +60,34 @@ if failed:
 PY
 
 user_home=${HOME:?"HOME is not set"}
+if $replace_themes; then
+  export PLUGIN_BACKUP_LOCK="$lock_file"
+  export PLUGIN_BACKUP_DIR="$bundle_dir"
+  export PLUGIN_BACKUP_HOME="$user_home"
+  python3 <<'PY'
+import json, os, pathlib, shutil, subprocess, sys
+lock = json.loads(pathlib.Path(os.environ["PLUGIN_BACKUP_LOCK"]).read_text())
+bundle = pathlib.Path(os.environ["PLUGIN_BACKUP_DIR"])
+themes = lock.get("themes") or {}
+source = bundle / str(themes.get("directory") or "")
+if not themes.get("included") or not source.is_dir():
+    print("Backup does not contain themes", file=sys.stderr)
+    sys.exit(1)
+target = pathlib.Path(os.environ["PLUGIN_BACKUP_HOME"]) / ".config/omarchy/themes"
+target.mkdir(parents=True, exist_ok=True)
+for item in source.iterdir():
+    destination = target / item.name
+    if destination.exists():
+        print(f"SKIP theme {item.name}: already exists", file=sys.stderr)
+        continue
+    shutil.copytree(item, destination, symlinks=True)
+current = themes.get("current")
+if current:
+    result = subprocess.run(["omarchy", "theme", "set", current], text=True)
+    if result.returncode:
+        print(f"WARN could not activate saved theme: {current}", file=sys.stderr)
+PY
+fi
 if $replace_shell_config; then
   [[ -f "$bundle_dir/shell.json" ]] || { echo "Backup has no shell.json" >&2; exit 1; }
   target="$user_home/.config/omarchy/shell.json"
@@ -67,4 +97,4 @@ if $replace_shell_config; then
   omarchy-shell shell reloadConfig
 fi
 omarchy-shell shell rescanPlugins
-echo "Restore complete. Use --replace-shell-config to restore saved layout and enabled state."
+echo "Restore complete. Use --replace-shell-config for saved layout and --replace-themes for saved themes."

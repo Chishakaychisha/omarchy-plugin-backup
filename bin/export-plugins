@@ -2,15 +2,17 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' "Usage: export-plugins [--output DIRECTORY] [--include-local-changes]"
+  printf '%s\n' "Usage: export-plugins [--output DIRECTORY] [--include-local-changes] [--include-themes]"
 }
 
 output_dir="$PWD"
 include_local_changes=false
+include_themes=false
 while (($#)); do
   case "$1" in
     --output) output_dir=${2:?"--output needs a directory"}; shift 2 ;;
     --include-local-changes) include_local_changes=true; shift ;;
+    --include-themes) include_themes=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -22,6 +24,7 @@ command -v omarchy >/dev/null || { echo "omarchy is required" >&2; exit 1; }
 
 user_home=${HOME:?"HOME is not set"}
 plugins_dir="$user_home/.config/omarchy/plugins"
+themes_dir="$user_home/.config/omarchy/themes"
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 bundle_name="omarchy-plugin-backup-$timestamp"
 staging_dir=$(mktemp -d)
@@ -33,15 +36,23 @@ if [[ -f "$user_home/.config/omarchy/shell.json" ]]; then
   cp "$user_home/.config/omarchy/shell.json" "$bundle_dir/shell.json"
 fi
 
+current_theme=$(omarchy theme current 2>/dev/null || true)
+if $include_themes && [[ -d "$themes_dir" ]]; then
+  cp -a "$themes_dir" "$bundle_dir/themes"
+fi
+
 export PLUGIN_BACKUP_DIR="$plugins_dir"
 export PLUGIN_BACKUP_BUNDLE="$bundle_dir"
 export PLUGIN_BACKUP_INCLUDE_LOCAL_CHANGES="$include_local_changes"
+export PLUGIN_BACKUP_INCLUDE_THEMES="$include_themes"
+export PLUGIN_BACKUP_CURRENT_THEME="$current_theme"
 python3 <<'PY'
 import json, os, pathlib, subprocess, sys
 
 plugins_dir = pathlib.Path(os.environ["PLUGIN_BACKUP_DIR"])
 bundle_dir = pathlib.Path(os.environ["PLUGIN_BACKUP_BUNDLE"])
 include_changes = os.environ["PLUGIN_BACKUP_INCLUDE_LOCAL_CHANGES"] == "true"
+include_themes = os.environ["PLUGIN_BACKUP_INCLUDE_THEMES"] == "true"
 
 def run(path, *args):
     return subprocess.run(["git", "-C", str(path), *args], text=True,
@@ -84,6 +95,11 @@ lock = {
     "format": 1,
     "createdAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     "shellConfig": "shell.json" if shell.exists() else None,
+    "themes": {
+        "included": include_themes and (bundle_dir / "themes").is_dir(),
+        "directory": "themes" if (bundle_dir / "themes").is_dir() else None,
+        "current": os.environ.get("PLUGIN_BACKUP_CURRENT_THEME", "").strip() or None,
+    },
     "plugins": plugins,
     "warnings": warnings,
 }
